@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:jamlink:schema:1.0",
+  "title": "Jamlink 1.0 message",
+  "description": "Any Jamlink message. Known types are checked against their definition. Unknown types and unknown fields are allowed, because receivers must ignore them.",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": { "type": "string" }
+  },
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "beacon" } } }, "then": { "$ref": "#/$defs/beacon" } },
+    { "if": { "properties": { "type": { "const": "hello" } } }, "then": { "$ref": "#/$defs/hello" } },
+    { "if": { "properties": { "type": { "const": "entity" } } }, "then": { "$ref": "#/$defs/entity" } },
+    { "if": { "properties": { "type": { "const": "snapshot_end" } } }, "then": { "$ref": "#/$defs/snapshot_end" } },
+    { "if": { "properties": { "type": { "const": "remove" } } }, "then": { "$ref": "#/$defs/remove" } },
+    { "if": { "properties": { "type": { "const": "event" } } }, "then": { "$ref": "#/$defs/event" } },
+    { "if": { "properties": { "type": { "const": "result" } } }, "then": { "$ref": "#/$defs/result" } },
+    { "if": { "properties": { "type": { "const": "transfer_offer" } } }, "then": { "$ref": "#/$defs/transfer_offer" } },
+    { "if": { "properties": { "type": { "const": "transfer_reply" } } }, "then": { "$ref": "#/$defs/transfer_reply" } },
+    { "if": { "properties": { "type": { "const": "transfer" } } }, "then": { "$ref": "#/$defs/transfer" } },
+    { "if": { "properties": { "type": { "const": "chat" } } }, "then": { "$ref": "#/$defs/chat" } },
+    { "if": { "properties": { "type": { "const": "peers" } } }, "then": { "$ref": "#/$defs/peers" } },
+    { "if": { "properties": { "type": { "const": "heartbeat" } } }, "then": { "$ref": "#/$defs/heartbeat" } },
+    { "if": { "properties": { "type": { "const": "bye" } } }, "then": { "$ref": "#/$defs/bye" } },
+    { "if": { "properties": { "type": { "const": "error" } } }, "then": { "$ref": "#/$defs/error" } }
+  ],
+  "$defs": {
+    "peerId": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "entityId": { "type": "string", "pattern": "^[0-9a-f]{16}:[0-9]+$" },
+    "eventId": { "type": "string", "pattern": "^[0-9a-f]{16}:e[0-9]+$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "vec3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "quat": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+    "color": { "type": "string", "pattern": "^#[0-9a-f]{6}$" },
+    "gameFaction": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "text64": { "type": "string", "description": "Receivers truncate beyond 64 characters." },
+    "peerInfo": {
+      "type": "object",
+      "required": ["peerId", "host", "port"],
+      "properties": {
+        "peerId": { "$ref": "#/$defs/peerId" },
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "$ref": "#/$defs/port" }
+      }
+    },
+
+    "beacon": {
+      "description": "UDP broadcast to port 45800 every second.",
+      "type": "object",
+      "required": ["type", "protocol", "version", "peerId", "name", "port"],
+      "properties": {
+        "type": { "const": "beacon" },
+        "protocol": { "const": "jamlink" },
+        "version": { "$ref": "#/$defs/version" },
+        "peerId": { "$ref": "#/$defs/peerId" },
+        "name": { "$ref": "#/$defs/text64" },
+        "port": { "$ref": "#/$defs/port" }
+      }
+    },
+
+    "hello": {
+      "description": "First message on every connection, sent by both sides.",
+      "type": "object",
+      "required": ["type", "protocol", "version", "peerId", "name", "faction", "port", "peers"],
+      "properties": {
+        "type": { "const": "hello" },
+        "protocol": { "const": "jamlink" },
+        "version": { "$ref": "#/$defs/version" },
+        "peerId": { "$ref": "#/$defs/peerId" },
+        "name": { "$ref": "#/$defs/text64" },
+        "team": { "$ref": "#/$defs/text64" },
+        "faction": { "$ref": "#/$defs/gameFaction" },
+        "port": { "$ref": "#/$defs/port" },
+        "handles": { "type": "array", "items": { "type": "string" } },
+        "peers": { "type": "array", "items": { "$ref": "#/$defs/peerInfo" } }
+      }
+    },
+
+    "entity": {
+      "description": "Complete current state of one entity, broadcast by its owner. Replaces the receiver's replica.",
+      "type": "object",
+      "required": ["type", "id", "owner", "kind", "t", "pos"],
+      "properties": {
+        "type": { "const": "entity" },
+        "id": { "$ref": "#/$defs/entityId" },
+        "owner": { "$ref": "#/$defs/peerId" },
+        "kind": {
+          "type": "string",
+          "description": "Core kinds: player, npc, creature, item, resource, structure, projectile, marker. Unknown kinds are drawn as marker.",
+          "examples": ["player", "npc", "creature", "item", "resource", "structure", "projectile", "marker"]
+        },
+        "t": { "type": "integer", "minimum": 0, "description": "Owner's own clock in milliseconds." },
+        "pos": { "$ref": "#/$defs/vec3" },
+        "vel": { "$ref": "#/$defs/vec3" },
+        "yaw": { "type": "number" },
+        "rot": { "$ref": "#/$defs/quat" },
+        "radius": { "type": "number", "minimum": 0 },
+        "height": { "type": "number", "minimum": 0 },
+        "subkind": { "$ref": "#/$defs/text64" },
+        "name": { "$ref": "#/$defs/text64" },
+        "hp": { "type": "number" },
+        "hpMax": { "type": "number", "exclusiveMinimum": 0 },
+        "faction": {
+          "type": "string",
+          "description": "hostile, neutral, a game's own faction, or a game sub-faction such as goblin_farm.rebels.",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)*$"
+        },
+        "state": {
+          "type": "string",
+          "examples": ["idle", "moving", "attacking", "working", "stunned", "dead"]
+        },
+        "qty": { "type": "integer", "minimum": 0 },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "examples": [["solid", "pickup", "interactable", "commandable", "invulnerable"]]
+        },
+        "display": {
+          "type": "object",
+          "properties": {
+            "color": { "$ref": "#/$defs/color" },
+            "shape": {
+              "type": "string",
+              "examples": ["capsule", "box", "sphere", "cylinder", "cone", "flat"]
+            },
+            "label": { "$ref": "#/$defs/text64" }
+          }
+        },
+        "ext": { "type": "object" }
+      }
+    },
+
+    "snapshot_end": {
+      "type": "object",
+      "required": ["type", "count"],
+      "properties": {
+        "type": { "const": "snapshot_end" },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "remove": {
+      "type": "object",
+      "required": ["type", "id", "reason"],
+      "properties": {
+        "type": { "const": "remove" },
+        "id": { "$ref": "#/$defs/entityId" },
+        "reason": { "type": "string", "examples": ["destroyed", "taken", "despawned"] }
+      }
+    },
+
+    "event": {
+      "description": "A request sent directly to the target entity's owner.",
+      "type": "object",
+      "required": ["type", "eventId", "event", "target"],
+      "properties": {
+        "type": { "const": "event" },
+        "eventId": { "$ref": "#/$defs/eventId" },
+        "event": { "type": "string", "minLength": 1 },
+        "target": { "$ref": "#/$defs/entityId" },
+        "source": { "$ref": "#/$defs/entityId" },
+        "data": { "type": "object" },
+        "wantResult": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "event": { "const": "damage" } } },
+          "then": {
+            "required": ["data"],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": ["amount"],
+                "properties": {
+                  "amount": { "type": "number", "minimum": 0 },
+                  "damageType": { "type": "string", "examples": ["physical", "fire", "cold", "poison", "magic"] }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event": { "const": "heal" } } },
+          "then": {
+            "required": ["data"],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": ["amount"],
+                "properties": { "amount": { "type": "number", "minimum": 0 } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event": { "const": "push" } } },
+          "then": {
+            "required": ["data"],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": ["impulse"],
+                "properties": { "impulse": { "$ref": "#/$defs/vec3" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event": { "const": "status" } } },
+          "then": {
+            "required": ["data"],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": ["effect", "duration"],
+                "properties": {
+                  "effect": { "type": "string", "examples": ["slow", "stun", "burn", "poison"] },
+                  "duration": { "type": "number", "minimum": 0 },
+                  "strength": { "type": "number", "minimum": 0, "maximum": 1 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event": { "const": "interact" } } },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "properties": { "verb": { "type": "string" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event": { "const": "take" } } },
+          "then": {
+            "required": ["wantResult"],
+            "properties": {
+              "wantResult": { "const": true },
+              "data": {
+                "type": "object",
+                "properties": { "qty": { "type": "integer", "minimum": 1 } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event": { "const": "give" } } },
+          "then": {
+            "required": ["data", "wantResult"],
+            "properties": {
+              "wantResult": { "const": true },
+              "data": {
+                "type": "object",
+                "required": ["subkind", "qty"],
+                "properties": {
+                  "subkind": { "$ref": "#/$defs/text64" },
+                  "qty": { "type": "integer", "minimum": 1 },
+                  "ext": { "type": "object" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "event": { "const": "command" } } },
+          "then": {
+            "required": ["data"],
+            "properties": {
+              "data": {
+                "type": "object",
+                "required": ["order"],
+                "properties": {
+                  "order": { "enum": ["move", "attack", "follow", "stop", "hold"] },
+                  "pos": { "$ref": "#/$defs/vec3" },
+                  "targetId": { "$ref": "#/$defs/entityId" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    "result": {
+      "type": "object",
+      "required": ["type", "eventId", "ok"],
+      "properties": {
+        "type": { "const": "result" },
+        "eventId": { "$ref": "#/$defs/eventId" },
+        "ok": { "type": "boolean" },
+        "reason": { "type": "string", "examples": ["declined", "not_owner", "unknown_target", "unsupported"] },
+        "data": { "type": "object" }
+      }
+    },
+
+    "transfer_offer": {
+      "description": "Optional feature in 1.0.",
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": { "const": "transfer_offer" },
+        "id": { "$ref": "#/$defs/entityId" }
+      }
+    },
+
+    "transfer_reply": {
+      "description": "Optional feature in 1.0.",
+      "type": "object",
+      "required": ["type", "id", "accept"],
+      "properties": {
+        "type": { "const": "transfer_reply" },
+        "id": { "$ref": "#/$defs/entityId" },
+        "accept": { "type": "boolean" }
+      }
+    },
+
+    "transfer": {
+      "description": "Every peer must apply this when it comes from the current owner.",
+      "type": "object",
+      "required": ["type", "id", "from", "to"],
+      "properties": {
+        "type": { "const": "transfer" },
+        "id": { "$ref": "#/$defs/entityId" },
+        "from": { "$ref": "#/$defs/peerId" },
+        "to": { "$ref": "#/$defs/peerId" }
+      }
+    },
+
+    "chat": {
+      "type": "object",
+      "required": ["type", "name", "text"],
+      "properties": {
+        "type": { "const": "chat" },
+        "name": { "$ref": "#/$defs/text64" },
+        "text": { "type": "string", "minLength": 1, "description": "Receivers truncate beyond 500 characters." }
+      }
+    },
+
+    "peers": {
+      "type": "object",
+      "required": ["type", "peers"],
+      "properties": {
+        "type": { "const": "peers" },
+        "peers": { "type": "array", "items": { "$ref": "#/$defs/peerInfo" } }
+      }
+    },
+
+    "heartbeat": {
+      "type": "object",
+      "required": ["type"],
+      "properties": { "type": { "const": "heartbeat" } }
+    },
+
+    "bye": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "bye" },
+        "reason": { "type": "string" }
+      }
+    },
+
+    "error": {
+      "type": "object",
+      "required": ["type", "code"],
+      "properties": {
+        "type": { "const": "error" },
+        "code": { "type": "string", "examples": ["version_mismatch", "bad_message", "too_large", "not_ready"] },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}
