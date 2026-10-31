@@ -3,6 +3,7 @@ name = "jamlink"
 version = "0.1.0"
 edition = "2024"
 description = "Jamlink 1.0 reference implementation and conformance test peer"
+license = "MIT-0"
 publish = false
 
 [dependencies]

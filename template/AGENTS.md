@@ -112,8 +112,9 @@ If something is unclear, ask the human instead of guessing.
   tell the human about any you leave: some are allowed, such as declining
   damage. It also spawns a "Walking north" NPC: in this game it must move
   north (-Z), or the coordinate conversion is wrong.
-- If you are unsure how a rule works, ask the human for
-  reference/src/node.rs from the jam repo. It shows one correct way to do it.
+- If you are unsure how a rule works, read the reference implementation. It
+  shows one correct way to do it:
+  https://github.com/FSund/jamlink-spec/blob/main/reference/src/node.rs
 
 ## This game
 
