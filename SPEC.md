@@ -17,7 +17,7 @@ Design principles:
 
 The key words MUST, SHOULD and MAY are used as in RFC 2119.
 
-Companion files for coding agents: [`template/AGENTS.md`](template/AGENTS.md) goes into every game repo, and [`template/jamlink.schema.json`](template/jamlink.schema.json) validates every message.
+Companion files for coding agents: [`template/AGENTS.md`](template/AGENTS.md) goes into every game repo, and [`template/jamlink.schema.json`](template/jamlink.schema.json) validates every message. [`reference/`](reference/) holds a Rust reference implementation and `jamlink-test-peer`, which checks a running game against this spec.
 
 ## Conventions
 
@@ -103,7 +103,7 @@ Peers find each other with UDP broadcast beacons, then form a full mesh with exa
 | Discovery beacons | UDP broadcast | 45800 (fixed) |
 | Game connections | WebSocket (TCP) | 45801 by default; if taken, the next free port up to 45809 |
 
-The WebSocket endpoint is `ws://<host>:<port>/jamlink`. A peer SHOULD offer the WebSocket subprotocol `jamlink.1` but MUST NOT require it, since some engine clients cannot set subprotocols. The version in `hello` is authoritative.
+The WebSocket endpoint is `ws://<host>:<port>/jamlink`. Bind the server to all interfaces (`0.0.0.0`), not to localhost. Peers MUST NOT offer a WebSocket subprotocol: several clients, including Godot and Node's `ws`, abort the handshake when the server does not echo an offered one. The version in `hello` is authoritative.
 
 ### Beacons
 
@@ -119,23 +119,30 @@ Every peer broadcasts a beacon to `255.255.255.255:45800` once per second:
 
 ### Manual seeds
 
-Every game MUST also accept a list of `host:port` seed addresses, for example from a config file or command-line argument. Seeds cover networks that block broadcast and several games on one machine. Binding UDP 45800 from several processes on one machine needs `SO_REUSEADDR`, which not every engine exposes, so local testing usually runs on seeds such as `127.0.0.1:45802`.
+Every game MUST also accept a list of `host:port` seed addresses, for example from a config file or command-line argument. Seeds cover networks that block broadcast and several games on one machine. Binding UDP 45800 from several processes on one machine needs `SO_REUSEADDR`, which not every engine exposes, so local testing usually runs on seeds such as `127.0.0.1:45802`. A failed UDP bind MUST NOT be fatal: log it and carry on with seeds.
+
+Seeds are also the fallback when beacons do not arrive. On a machine with several network adapters (VPN, Hyper-V, WSL), a broadcast to `255.255.255.255` may leave through only one of them.
 
 ### Forming the mesh
 
 1. **Dial rule.** When a peer learns of another peer by beacon or gossip, it dials only if its own peer ID is smaller (plain string comparison). Otherwise it waits to be dialled.
 2. **Fallback.** If a known peer with a smaller ID has not connected within 5 seconds, dial it anyway. This covers one-way firewalls and missed beacons.
 3. **Seeds** are always dialled, since their peer ID is unknown until `hello`.
-4. **Duplicates.** If two open connections to the same peer exist after `hello`, keep the one dialled by the smaller peer ID and close the other with close code 4001.
-5. **Self-connections** (a seed that turns out to be yourself) are closed with code 4002.
+4. **Duplicates.** If two open connections to the same peer exist after `hello`, keep the one dialled by the smaller peer ID and close the other with close code 4001. Closing a duplicate is not a departure: the peer is still connected, so keep its entities.
+5. **Self-connections** (a seed that turns out to be yourself) are closed with code 4002, and that seed is not dialled again.
+6. **Retries.** Retry a failed dial every 3 seconds until connected. Forget a peer learned by beacon or gossip once it has not been seen for 15 seconds. Seeds are kept and retried.
+7. **Incompatible peers.** After closing with code 4003, do not dial that peer or seed again for the rest of the session.
+8. **Hello timeout.** Close a connection with code 4004 if no `hello` arrives within 10 seconds.
 
 ### Gossip
 
-Each `hello` carries the sender's list of connected peers, and a peer sends a `peers` message to all connections whenever a connection opens. A peer that learns of a peer it is not connected to applies the dial rule. Reaching any one peer is therefore enough to join the whole mesh.
+Each `hello` carries the sender's list of connected peers, and a peer broadcasts a `peers` message whenever a connection finishes its `hello` exchange. A peer that learns of a peer it is not connected to applies the dial rule. Reaching any one peer is therefore enough to join the whole mesh.
+
+A listed `host` is the address the sender uses, so a loopback host (`127.0.0.1`, `::1`, `localhost`) means "on the sender's machine". A receiver MUST replace a loopback host with the address it uses to reach the sender.
 
 ### Sending
 
-- **Broadcast** = send the same message on every open connection. Entity updates, removals, chat and transfers are broadcast.
+- **Broadcast** = send the same message on every connection that has finished its `hello` exchange. Entity updates, removals, chat and transfers are broadcast.
 - **Direct** = send on the one connection to the target peer. Events, results and transfer offers are direct.
 
 WebSocket runs over TCP, so messages on one connection arrive in order and are never lost while it is open. There is no ordering between different connections.
@@ -201,9 +208,9 @@ Both sides send `hello` as their first message, as soon as the connection opens:
 | `faction` | Yes | The game's own faction: lowercase snake_case, usually the game name. Fixed for the game, so it survives restarts |
 | `port` | Yes | The sender's WebSocket server port, for gossip |
 | `handles` | No | Standard and custom events this game acts on. A hint for UIs, not a promise |
-| `peers` | Yes | Peers the sender is connected to, with host as the sender sees it. May be empty |
+| `peers` | Yes | Peers the sender is connected to, with host as the sender sees it (see Gossip). May be empty |
 
-A peer MUST NOT send anything else until it has received and accepted the other side's `hello`. On a major version mismatch it sends an `error` with code `version_mismatch` and closes with code 4003.
+A peer MUST NOT send anything except `error` until it has received and accepted the other side's `hello`. On a major version mismatch it sends an `error` with code `version_mismatch` and closes with code 4003.
 
 ### Snapshot (join-in-progress)
 
@@ -222,13 +229,13 @@ After the snapshot, peers exchange `entity`, `remove`, `event`, `result`, `chat`
 ### Leaving
 
 - **Graceful:** send `bye` on every connection, then close each with code 1000. A peer that wants some entities to outlive it transfers them first (see Ownership).
-- **Ungraceful:** the connection closes, or nothing arrives on it for 5 seconds.
+- **Ungraceful:** the peer's last connection closes, or nothing arrives on it for 5 seconds, in which case close it with code 4005. A duplicate closed with code 4001 does not count.
 
 Either way, every other peer then removes all entities owned by the departed peer, and cancels pending transfers and events involving it. Entities it transferred away earlier are unaffected.
 
 ### Reconnecting
 
-A game that restarts generates a new peer ID and joins as a new peer. A peer whose connection drops while the game keeps running reconnects with the same peer ID and sends `hello` and a full snapshot again. Receivers already removed its entities when the connection dropped, so the snapshot simply recreates them.
+A game that restarts generates a new peer ID and joins as a new peer. A peer whose connection drops while the game keeps running reconnects under the rules in Forming the mesh, with the same peer ID, and sends `hello` and a full snapshot again. Receivers already removed its entities when the connection dropped, so the snapshot simply recreates them.
 
 ## Ownership
 
@@ -273,6 +280,7 @@ Rules for edge cases:
 
 - An owner has at most one open offer per entity. While an offer is open, it keeps sending updates as normal.
 - The entity ID never changes, so the ID prefix may no longer match the owner.
+- The new owner has its own clock, so a receiver discards its interpolation history for the entity when it applies `transfer`.
 - A quitting game transfers what should outlive it before sending `bye`. Any peer that accepts can adopt the leftovers. Without a coordinator, a quitting game picks the recipient itself, for example the peer whose player is nearest.
 
 ## Entities
@@ -367,7 +375,7 @@ Suggested values: `idle`, `moving`, `attacking`, `working`, `stunned`, `dead`. R
 | Tag | Meaning |
 | --- | --- |
 | `solid` | Blocks movement; other games SHOULD collide with it |
-| `pickup` | Accepts the `take` event |
+| `pickup` | Accepts the `take` event. Use it on loose items and on harvestable resources |
 | `interactable` | Accepts the `interact` event |
 | `commandable` | Accepts the `command` event from other peers |
 | `invulnerable` | Ignores `damage`; others need not bother sending it |
@@ -471,8 +479,8 @@ Five small messages handle chat, gossip, liveness, leaving and errors.
 | Type | Sent | Example | Notes |
 | --- | --- | --- | --- |
 | `chat` | Broadcast | `{"type": "chat", "name": "Filip", "text": "Goblins at the river!"}` | `name` is the speaker shown to players. `text` is at most 500 characters |
-| `peers` | Broadcast | `{"type": "peers", "peers": [{"peerId": "7c01d9e4f2a83b55", "host": "192.168.1.23", "port": 45801}]}` | Sent whenever a connection opens. Same shape as `peers` in `hello` |
-| `heartbeat` | Each connection | `{"type": "heartbeat"}` | Sent on any connection that has carried nothing else for 1 second |
+| `peers` | Broadcast | `{"type": "peers", "peers": [{"peerId": "7c01d9e4f2a83b55", "host": "192.168.1.23", "port": 45801}]}` | Sent whenever a connection finishes `hello`. Same shape as `peers` in `hello` |
+| `heartbeat` | Each connection | `{"type": "heartbeat"}` | Sent on any connection this peer has sent nothing on for 1 second. Incoming traffic does not count |
 | `bye` | Broadcast | `{"type": "bye", "reason": "quit"}` | The last message before a graceful close |
 | `error` | One connection | `{"type": "error", "code": "bad_message", "message": "pos must have 3 numbers"}` | Informational. It does not close the connection unless stated |
 
@@ -486,7 +494,8 @@ Error codes are `version_mismatch`, `bad_message`, `too_large` and `not_ready` (
 | 4001 | Duplicate connection between the same two peers |
 | 4002 | Connected to yourself |
 | 4003 | Incompatible protocol version |
-| 4004 | Protocol violation, e.g. repeated messages before `hello` |
+| 4004 | Protocol violation, e.g. repeated messages before `hello`, or no `hello` within 10 seconds |
+| 4005 | Nothing arrived for 5 seconds |
 
 ## Timing and rates
 
@@ -498,16 +507,16 @@ Moving entities are sent at 10 Hz, everything else only when it changes, and rec
 | --- | --- |
 | Moving entities | 10 Hz recommended, 20 Hz maximum |
 | Entities that are not moving | Only when something changes |
-| Projectiles on a straight path | Once at spawn with `vel`, then `remove` on hit; receivers extrapolate |
+| Projectiles on a straight path | Once at spawn with `vel`, then `remove` on hit; receivers extrapolate until the `remove` |
 | Snapshots | All at once, exempt from rate limits |
 | Events, results, chat, transfers | Immediately |
 
-Leaving out optional fields that hold their default keeps messages small. A typical entity message is 300–500 bytes, so 100 moving entities at 10 Hz is roughly 0.5 MB/s per connection. That is fine on wired LAN; on Wi-Fi, keep moving entities per game under about 200.
+Leaving out optional fields that hold their default keeps messages small. A typical entity message is 300–500 bytes, so 100 moving entities at 10 Hz is roughly 0.5 MB/s per connection, and a game sends that on every connection. Six games with 200 moving entities each come to about 24 MB/s in total. That is fine on a wired LAN, but through a Wi-Fi access point every message crosses the air twice, so on Wi-Fi keep moving entities per game under about 50.
 
 ### Smoothing remote entities
 
 - Render each remote entity 100 ms behind the newest `t` received from its owner, interpolating between the two updates around that moment.
-- If no newer update has arrived, extrapolate with `vel` for up to 250 ms, then hold position.
+- If no newer update has arrived, extrapolate with `vel` for up to 250 ms, then hold position. A `projectile` is the exception: keep extrapolating until its `remove` arrives.
 - If the position jumps more than 5 m between updates, snap to it instead of interpolating. Treat it as a teleport.
 - `t` is per owner, so each owner gets its own render clock.
 
@@ -516,9 +525,12 @@ Leaving out optional fields that hold their default keeps messages small. A typi
 | Timer | Value |
 | --- | --- |
 | Beacon interval | 1 s |
-| Heartbeat after idle | 1 s |
+| Heartbeat after sending nothing | 1 s |
 | Peer considered gone after silence | 5 s |
 | Dial fallback for a smaller-ID peer | 5 s |
+| Redial after a failed dial | 3 s |
+| Hello timeout | 10 s |
+| Forget a peer not seen | 15 s |
 | Result timeout | 5 s |
 | Transfer reply timeout | 5 s |
 
@@ -583,7 +595,7 @@ Every message type at a glance:
 | `transfer_reply` | WebSocket | Current owner | Accept or decline a handover (optional feature) |
 | `transfer` | WebSocket | Broadcast | Handover confirmed. Every peer MUST apply it |
 | `chat` | WebSocket | Broadcast | A player says something |
-| `peers` | WebSocket | Broadcast | A connection opened |
+| `peers` | WebSocket | Broadcast | A connection finished `hello` |
 | `heartbeat` | WebSocket | One connection | After 1 second with nothing else sent |
 | `bye` | WebSocket | Broadcast | Leaving gracefully |
 | `error` | WebSocket | One connection | Reporting a bad message |
@@ -614,7 +626,10 @@ Each game needs three pieces: a UDP socket that can send and receive broadcasts,
 | Python | `socket` with `SO_BROADCAST` | `websockets` | `websockets` | `json` |
 | Node / Electron | `dgram` | `ws` | `ws` | Built in |
 
-Two further notes:
+Further notes:
 
 - Godot's high-level multiplayer API speaks its own protocol. Use the low-level classes above instead.
+- Godot's `WebSocketPeer` buffers default to 65535 bytes, and a snapshot goes out all at once. Set `inbound_buffer_size` and `outbound_buffer_size` to about 1 MiB before calling `accept_stream()` or `connect_to_url()`.
+- Disable Nagle's algorithm (`TCP_NODELAY`) on every connection where the engine allows it, or small updates can be held back long enough to miss the 100 ms interpolation window.
+- Windows Firewall blocks incoming connections until they are allowed. Allow the game on private networks at the first-run prompt, or other machines cannot connect.
 - Browser builds cannot take part, because browsers can neither accept WebSocket connections nor send UDP. Ship desktop builds for the jam.
